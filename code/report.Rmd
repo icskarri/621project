@@ -1,0 +1,811 @@
+---
+title: "IAL-621 Project"
+author: "Ian Skarring"
+date: "12/2/2020"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analysis of Summer Transfer Window 2020
+
+#### Project Abstract
+
+The goal of this project is to collect data from Twitter on specific sports journalists, scrape data from Wikipedia on completed transfers in Europe's main leagues (England, Italy, Spain), and make comparisons to see which journalists fans would look to for inside info before official announcements. For those of us who closely follow a sport and are very passionate about it, sometimes it could be nice to know which new player your favorite team may be signing. The main comparison point for the two data sources will be timestamps / dates looking at when journalists Tweet an updated pertaining to a transfer, and the date the transfer is officially confirmed by the teams.
+
+As in other industries, sports leagues and teams have had to adjust to COVID-19. Ticket, merchandise, and concession sales generate a large share of revenue for many teams; so the impact of empty stadiums has been felt across all leagues. This analysis will provide some insights on how teams are balancing not having those transfer funds while still trying to reach their objectives. It will also be interesting to see which teams were still able to move a lot of players in attempts to strengthen their squads.
+
+#### Data for this project
+
+Tweets from journalists have been collected directly from the Twitter API with [Massmine](https://www.massmine.org/docs/config.html). I used a virtual machine and installed an Ubuntu OS instance, then downloaded Massmine. From there, I used config files and the 'user' option while working in the terminal. Once the Twitter data was written to JSON files, I passed it back to my Windows environment across a shared folder. In summary, this amounts to 12,361 Tweets across all of the journalists while the scraped transfers from Wikipedia combine for 2,048 records of 5 variables. Data for confirmed transfers was scraped from Wikipedia articles, which contained links to all of the confirmation pages from various sports news sites.
+
+**Completed transfers**
+
+* [Premier League - England](https://en.wikipedia.org/wiki/List_of_English_football_transfers_summer_2020)
+
+* [Serie A - Italy](https://en.wikipedia.org/wiki/List_of_Italian_football_transfers_summer_2020)
+
+* [La Liga - Spain](https://en.wikipedia.org/wiki/List_of_Spanish_football_transfers_summer_2020)
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+#loading packages
+library(gt)
+library(htmltools)
+library(lubridate)
+library(ndjson)
+library(plotly)
+library(reactable)
+library(stringr)
+library(tidyverse)
+library(tidytext)
+library(tm)
+
+```
+
+#### Tools and Libraries
+
+**Data processing**
+
+I used the [ndjson](https://cran.r-project.org/web/packages/ndjson/index.html) library for importing JSON files into the R environment, specifically the Twitter data files from Massmine. From there my processing was done with the core [Tidyverse](https://www.tidyverse.org/packages/), [Lubridate](https://lubridate.tidyverse.org/), and [Tidytext](https://cran.r-project.org/web/packages/tidytext/vignettes/tidytext.html) libraries. This allowed me to use the `%>%` operator across my data processing tasks, and smoothly extend my workflow into the visualizations. 
+
+**Tables**
+
+The [gt](https://gt.rstudio.com/articles/intro-creating-gt-tables.html) library is great for creating custom tables for R markdown documents. It takes tibbles as objects and allows you to add headers, stubs, column labels, data of course, and footnotes. There is a table towards the end of this report about the Kai Havertz transfer saga, which was written with gt! The [reactable](https://glin.github.io/reactable/index.html) library is R's rendition of the popular React JavaScript framework's React Table library. The table shortly following this was written with the reactable library; it contains the number of Tweets by each journalist for the period between February 1 and October 6, as well as the corresponding journalist's Twitter handle with a hyperlink to their profile. As the table is rendered in the markdown document, JavaScript code provides the interactivity: sorting numerically by Tweets or alphabetically by journalist.
+
+**Visualizations**
+
+Lastly, I used [ggplot2](https://ggplot2.tidyverse.org/) and [plotly](https://plotly.com/r/) for the visualizations in this report, such as bar charts and scatter plots. Plotly's visualizations render with interactive elements, which I liked most to add some hover events with metadata displayed in the tooltips.
+
+``` {r echo = FALSE, warning = FALSE, message = FALSE}
+#loading data
+deals <- read.csv('deals.csv')
+fees <- read.csv('deals_fees.csv')
+
+#working with transfer tweets now
+#reading in json files
+castles <- stream_in("/Users/icska/Documents/621project/castles.json") %>%
+  as_tibble()
+
+romano <- stream_in("/Users/icska/Documents/621project/romano.json") %>%
+  as_tibble()
+
+ornstein <- stream_in("/Users/icska/Documents/621project/ornstein.json") %>%
+  as_tibble()
+
+stone <- stream_in("/Users/icska/Documents/621project/stone.json") %>%
+  as_tibble()
+
+witness <- stream_in("/Users/icska/Documents/621project/witness.json") %>%
+  as_tibble()
+
+#tweet user object
+user <- as.data.frame(c(castles$user.name, ornstein$user.name,
+                        romano$user.name, stone$user.name,
+                        witness$user.name))
+
+#tweet date object
+date <- as.data.frame(c(castles$created_at, ornstein$created_at,
+                        romano$created_at, stone$created_at,
+                        witness$created_at))
+
+#tweet text object
+text <- as.data.frame(c(castles$text, ornstein$text, romano$text,
+                        stone$text, witness$text))
+
+#user followers object
+followers <- as.data.frame(c(castles$user.followers_count, 
+                             ornstein$user.followers_count,
+                             romano$user.followers_count,
+                             stone$user.followers_count,
+                             witness$user.followers_count))
+
+#retweet count object
+retweets <- as.data.frame(c(castles$retweet_count, ornstein$retweet_count,
+                            romano$retweet_count, stone$retweet_count,
+                            witness$retweet_count))
+
+#combining user, date, text, and followers as data frame
+data <- as.data.frame(c(user, date, text, followers, retweets))
+remove(user, date, text, followers, retweets)
+
+#renaming
+colnames(data) <- c('user', 'date', 'text', 'followers', 'retweets')
+
+#cleaning dates
+month <- substr(data$date, 5, 7)
+day <- substr(data$date, 9, 10)
+year <- substr(data$date, 27, 30)
+hms <- substr(data$date, 12, 19)
+data$date <- paste(month, day, year, hms, sep = '-')
+data$date <- mdy_hms(data$date)
+remove(month, day, year, hms)
+
+#filter for date range and arrange in desc order
+data <- data %>%
+  filter(date > '2020-02-01' & date < '2020-10-06') %>%
+  arrange(desc(date)) %>%
+  rename(datetime = date)
+
+#players object
+players <- deals$player
+
+players <- as.data.frame(str_split_fixed(players,
+                                         pattern = '\\s',
+                                         n = 2))
+
+```
+
+#### Journalists
+
+I selected five sport journalists who are based in countries throughout Europe, each who work with a major media outlet. Among these are Sky, BBC, The Athletic, Sport Witness, and The Sunday Times. Each of these journalists have verified Twitter accounts and are well-known for their coverage of transfers. The following table shows each of the journalist's number of Tweets from February 1 to October 6 of this year, alongside a clickable link to their Twitter profile. The reason I chose the date range of February 1 to October 6 is because the winter transfer window closes on January 31 of each year, and thereafter the focus quickly shifts to the speculation around deals that will happen in the summer window. Additionally, October 6 is the day following the close of this year's summer transfer window (the dates were adjusted this year due to COVID-19 extending last season).
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+#react table
+#links to profiles
+user_handles <- c('Sport_Witness', 'FabrizioRomano', 
+                  'DuncanCastles', 'sistoney67',
+                  'David_Ornstein')
+
+#table with react library
+#data for table
+react_data <- data %>%
+  count(user) %>%
+  arrange(desc(n)) %>%
+  select(-user) %>%
+  mutate(user = user_handles)
+
+#function to create bar chart with left-side label
+bar_chart <- function(label, width = '100%', height = '14px',
+                      fill = '#00bfc4', background = NULL) {
+  bar <- div(style = list(background = fill, width = width,
+                          height = height))
+  chart <- div(style = list(flexGrow = 1, marginLeft = '6px',
+                            background = background), bar)
+  div(style = list(display = 'flex', alignItems = 'center'), label, chart)
+}
+
+#creating the table
+reactable(react_data,
+          defaultSorted = 'n',
+          columns = list(
+            user = colDef(
+              cell = function(value) {
+                url <- paste0('https://twitter.com/', value)
+                tags$a(href = url, target = '_blank', 
+                       paste0('@', value))
+              },
+              width = 150
+            ),
+            n = colDef(
+              name = 'number of tweets from 2/1 to 10/6',
+              defaultSortOrder = 'desc',
+              cell = function(value) {
+                width = paste0(value * 100 / max(react_data$n), '%')
+                value <- format(value, big.mark = ',')
+                value <- format(value, width = 9, justify = 'right')
+                bar_chart(value, width = width, fill = '#3fc990')
+              },
+              align = 'center'
+            )
+          ),
+          style = list(fontFamily = 'monospace',
+                       whiteSpace = 'pre'))
+
+
+remove(user_handles)
+```
+
+The following visual plots the number of times the five journalist's Tweets were retweeted in the date range mentioned. As the chart shows, Fabrizio Romano has quite a following next to the others. 
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+#number of retweets per user
+
+user <- c('Duncan Castles', 'David Ornstein',
+          'Fabrizio Romano', 'Simon Stone',
+          'Sport Witness')
+
+retweets <- data %>%
+  filter(user == 'Duncan Castles') 
+
+castles_RTs <- sum(retweets$retweets)
+  
+retweets <- data %>%
+  filter(user == 'David Ornstein')
+
+ornstein_RTs <- sum(retweets$retweets)
+
+retweets <- data %>%
+  filter(user == 'Fabrizio Romano')
+
+romano_RTs <- sum(retweets$retweets)
+
+retweets <- data %>%
+  filter(user == 'Simon Stone')
+
+stone_RTs <- sum(retweets$retweets)
+
+retweets <- data %>%
+  filter(user == 'Sport Witness')
+
+witness_RTs <- sum(retweets$retweets)
+
+retweets <- as.data.frame(c(castles_RTs, ornstein_RTs,
+                            romano_RTs, stone_RTs,
+                            witness_RTs))
+retweets <- retweets %>%
+  mutate(user = user)
+
+names(retweets) <- c('total_retweets', 'user')
+
+retweets <- retweets %>%
+  select(user, total_retweets) %>%
+  arrange(desc(total_retweets))
+
+retweets %>%
+  plot_ly(x = ~user,
+          y = ~total_retweets,
+          type = 'bar',
+          color = ~user) %>%
+  layout(title = 'Number of retweets per user',
+         xaxis = list(title = 'user'),
+         yaxis = list(title = 'number of retweets'),
+         showlegend = FALSE)
+
+remove(retweets, castles_RTs, ornstein_RTs, romano_RTs,
+       stone_RTs, witness_RTs, user)
+
+```
+
+#### Summer 2020 Transfer Window
+
+**How active were the Premier League clubs?**
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+#net transfer activity
+
+#deals %>%
+#  count(new_club) %>%
+#  top_n(n = 100) %>%
+#  arrange(desc(n))
+
+premier_league <- c('Arsenal', 'Aston Villa',
+                    'Brighton & Hove Albion',
+                    'Burnley', 'Chelsea',
+                    'Crystal Palace', 'Everton',
+                    'Fulham', 'Leeds United',
+                    'Leicester City', 'Liverpool',
+                    'Manchester City',
+                    'Manchester United',
+                    'Newcastle United',
+                    'Sheffield United',
+                    'Southampton',
+                    'Tottenham Hotspur',
+                    'West Bromwich Albion',
+                    'West Ham United',
+                    'Wolverhampton Wanderers')
+
+'%notin%' <- Negate('%in%')
+
+leaving_pl <- deals %>%
+  filter(old_club %in% premier_league)
+
+#leaving_pl %>%
+#  distinct(player)
+
+remove_index <- c(121, 832, 841, 866, 951, 1004, 1225, 
+                  1424, 1482, 1508, 1510)
+
+leaving_pl <- leaving_pl %>%
+  filter(index %notin% remove_index)
+
+#leaving_pl %>%
+#  distinct(player)
+
+joining_pl <- deals %>%
+  filter(new_club %in% premier_league)
+
+#joining_pl %>%
+#  distinct(player)
+
+remove_index <- c(777, 1041, 1060, 1108, 1228, 1518)
+
+joining_pl <- joining_pl %>%
+  filter(index %notin% remove_index)
+
+#joining_pl %>%
+#  distinct(player)
+
+#counts for each club
+departures <- leaving_pl %>%
+  count(old_club) %>%
+  rename(departures = n)
+
+arrivals <- joining_pl %>%
+  count(new_club) %>%
+  rename(arrivals = n)
+
+net_deals <- cbind(departures, arrivals)
+
+net_deals <- net_deals %>%
+  select(-new_club) %>%
+  rename(club = old_club) %>%
+  mutate(net = arrivals - departures) %>%
+  mutate(description = if_else(net >= 1, 'Net+', 'Net-'))
+
+#visual of net deals
+
+ggplot(net_deals, aes(x = club, y = net,
+                      label = net)) +
+  geom_bar(stat = 'identity', aes(fill = description),
+               size = 5) +
+  scale_fill_manual(name = 'Net transfers',
+                     labels = c('Net departures',
+                                'Net arrivals'),
+                     values = c('Net+' = '#00ba38',
+                                'Net-' = '#f8766d')) +
+  geom_text(color = 'black', size = 5) +
+  labs(title = 'Net transfers Summer 2020',
+       subtitle = 'Arrivals minus departures',
+       x = 'Team', y = 'Net transfers') +
+  coord_flip()
+
+
+remove(arrivals, departures, joining_pl, leaving_pl,
+       net_deals, remove_index)
+
+```
+
+Among the Premier League clubs, only Leeds United (4), Fulham(1), and Crystal Palace(1) had net positive transfer activity; in other words, they brought in more players than they let go. Chelsea(-26) had the lowest net activity of any club in the league, however most of these could be loans. Chelsea is well-known for owning many players exceeding the typical squad size of ~30 players, and loaning them out to other clubs on temporary contracts. From a business perspective it has worked well for them in recent years. When a player leaves on loan, the club they join on a temporary basis usually pays the player's wages in full, or a large portion of them. Since Chelsea still owns many of these players, they can save a lot of money by offloading wages. Should the player do well during the loan, they can return on a permanent deal and Chelsea could potentially earn a profit on the permanent sale of the player.
+
+The data also factors in players who are in the reserve team at the club, but leave on a loan or permanent deal. This is why we see many teams with net negative transfer activity. We can also infer that part of this is because smaller clubs still need to bring in players as in any other window, but due to COVID-19 they do not have the resources to pay large transfer fees. Loan deals offer these smaller clubs a cost-effective way to still bring in talented young players.
+
+#### Transfer activity across Europe
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+font <- list(family = 'Courier New, monospace',
+             size = 18,
+             color = 'black')
+
+```
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+#visual one
+top_deals <- fees %>%
+  arrange(desc(fee_usd)) %>%
+  top_n(n = 15)
+
+top_deals <- top_deals[order(desc(top_deals$fee_usd)), ]
+
+color_function_one <- colorRampPalette(c('orange', 'red'))
+colors_one <- color_function_one(max(top_deals$fee_usd))[top_deals$fee_usd]
+
+fig_one <- plot_ly(
+  top_deals,
+  x = ~player,
+  y = ~fee_usd,
+  mode = 'markers',
+  marker = list(color = colors_one)
+)
+
+x_one <- list(title = 'Player',
+          titlefont = font,
+          categoryorder = 'array',
+          categoryarray = ~fee_usd)
+
+y_one <- list(title = 'Transfer fee',
+          titlefont = font)
+
+hover_text_one <- top_deals$new_club
+
+fig_one <- fig_one %>%
+  layout(title = 'Most expensive transfers',
+         xaxis = x_one, 
+         yaxis = y_one) %>%
+  add_trace(text = hover_text_one,
+            hover_info = 'text')
+
+
+#visual two
+buying_clubs <- deals %>%
+  count(new_club) %>%
+  top_n(n = 15)
+
+buying_clubs <- buying_clubs[order(desc(buying_clubs$n)), ]
+
+
+color_function_two <- colorRampPalette(c('blue', 'green'))
+colors_two <- color_function_two(max(buying_clubs$n))[buying_clubs$n]
+
+
+fig_two <- plot_ly(
+  buying_clubs,
+  x = ~new_club,
+  y = ~n,
+  mode = 'markers',
+  marker = list(color = colors_two)
+)
+
+x_two <- list(title = 'New club',
+              titlefont = font,
+              categoryorder = 'array',
+              categoryarray = ~n)
+
+y_two <- list(title = 'Count of transfers',
+              titlefont = font)
+
+hover_text_two <- buying_clubs$new_club
+
+fig_two <- fig_two %>%
+  layout(title = 'Most active buying clubs',
+         xaxis = x_two, 
+         yaxis = y_two) %>%
+  add_trace(text = hover_text_two,
+            hover_info = 'text')
+
+fig_two
+
+remove(color_function_two, colors_two,
+       fig_two, buying_clubs, x_two, y_two, 
+       hover_text_two)
+```
+
+The plot above shows the most active buying clubs, or the clubs who brought in the most players. Cadiz was recently promoted to the top division in Spain and it looks like they brought in an entire new squad worth of players. Most of the activity among the top 15 most active buying clubs is in Italy and Spain, with only one English team in the top 15: Bolton Wanderers. Bolton in particular has been hit very hard by COVID-19, as they were in financial administration prior to the pandemic, where an outside party comes in and manages the club from a financial and administrative perspective. So it is pretty remarkable they are still around, but great they are able to bring in players and hopefully turn things around.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+#visual three
+selling_clubs <- deals %>%
+  count(old_club) %>%
+  top_n(n = 15)
+
+selling_clubs <- selling_clubs[order(desc(selling_clubs$n)), ]
+
+
+color_function_three <- colorRampPalette(c('red', 'blue'))
+colors_three <- color_function_three(max(selling_clubs$n))[selling_clubs$n]
+
+fig_three <- plot_ly(
+  selling_clubs,
+  x = ~old_club,
+  y = ~n,
+  mode = 'markers',
+  marker = list(color = colors_three)
+)
+
+x_three <- list(title = 'Old club',
+                titlefont = font,
+                categoryorder = 'array',
+                categoryarray = ~n)
+
+y_three <- list(title = 'Count of transfers',
+                titlefont = font)
+
+hover_text_three <- selling_clubs$old_club
+
+fig_three <- fig_three %>%
+  layout(title = 'Most active selling clubs',
+         xaxis = x_three, 
+         yaxis = y_three) %>%
+  add_trace(text = hover_text_three,
+            hover_info = 'text')
+
+fig_three
+
+remove(color_function_three, colors_three,
+       fig_three, selling_clubs, x_three, y_three, 
+       hover_text_three)
+```
+
+The preceding plot shows the most active selling clubs measured by the number of players leaving, whether by loan or on a permanent basis. Most of these teams are considered bigger clubs, so it is possible they have been loaning out more players this year, as smaller clubs look to save financially while still bringing in players. Many of the clubs shown here have probably loaned out a number of players from their reserve teams, as these numbers are very high. 
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+#visual four
+freq_dates <- deals %>%
+  count(date) %>%
+  top_n(n = 15)
+
+freq_dates <- freq_dates[order(freq_dates$date), ]
+
+color_function_four <- colorRampPalette(c('yellow', 'orange'))
+colors_four <- color_function_four(max(freq_dates$n))[freq_dates$n]
+
+fig_four <- plot_ly(
+  freq_dates,
+  x = ~date,
+  y = ~n,
+  mode = 'markers',
+  marker = list(color = colors_four)
+)
+
+x_four <- list(title = 'Date',
+               titlefont = font,
+               categoryorder = 'array',
+               categoryarray = ~n)
+
+y_four <- list(title = 'Count of transfers',
+               titlefont = font)
+
+fig_four <- fig_four %>%
+  layout(title = 'Top 15 most active days',
+         subtitle = 'Measured by number of transfers',
+         xaxis = x_four, 
+         yaxis = y_four)
+
+#visual five
+ordered_dates <- deals %>%
+  count(date) %>%
+  arrange(date)
+
+color_function_five <- colorRampPalette(c('yellow', 'orange'))
+colors_five <- color_function_five(max(ordered_dates$n))[ordered_dates$n]
+
+
+fig_five <- plot_ly(
+  ordered_dates,
+  x = ~date,
+  y = ~n,
+  mode = 'markers',
+  type = 'scatter',
+  color = 'red',
+  size = I(70)
+  )
+
+x_five <- list(title = 'Date',
+               titlefont = font,
+               categoryorder = 'array',
+               categoryarray = ~date)
+
+y_five <- list(title = 'Count of transfers',
+               titlefont = font)
+
+
+fig_five <- fig_five %>%
+  layout(title = 'Number of deals per day',
+         xaxis = x_five, 
+         yaxis = y_five,
+         showlegend = FALSE)
+
+fig_five
+
+```
+
+The above plot shows the number of deals per day across the date range February 1 to October 6. The reason there are deals outside of the window (which officially opens July 1) is because clubs can reach pre-agreements, where the player has agreed terms with the new club, both clubs have agreed a fee or exchange, and the deal will officially go through once the transfer window opens. With pre-agreements, the player in the deal finishes the season with their current team and then joins their new team once the window opens. As the plot shows, once the window opened in early July, there was an uptick in the number of deals. 201 deals were completed on October 5 (only measured from the data collected), and this is known as Deadline Day, the last day of the transfer window. Clubs work hard to get last minute deals over the line and often times there is an anticipation from smaller clubs they can get a reduced transfer fee or a last-minute loan if they wait until the last minute. Selling clubs will sometimes let a player go last minute in order to offload their wages and / or receive a fee for the player depending on the type of deal. If a player's contract is in the final year, they are free to negotiate with other teams from the mid-season window. So there is an incentive to sell a player who is in the final year of their contract, even for a reduced fee. The alternative would be to let them leave on a free transfer at the end of the season.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+fig_four
+
+```
+
+The top 15 busiest days of the transfer window, measured by the number of deals completed, are shown above. From this we can see with the exception of Deadline Day, most weeks during the window are fairly consistent in terms of activity in the market. In the third week of July (7-20 and 7-21), there could have been a bit more activity because most countries had completed their seasons and had to get moving to prepare for an early start to the new season in early September, but there are likely many other factors contributing to this. It is difficult to measure why some days are busier than others.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+fig_one
+
+```
+
+The last summary plot of the deals data shows the top 15 deals during the transfer window measured by their transfer fees. It is clear COVID-19 didn't stop some clubs from still spending a lot of money to strengthen their teams. Kai Havertz's move to Chelsea went through for a fee of ~$95million, a crazy sum of money in general but especially during a difficult financial time. This deal became the main 'saga' of the window this summer, and a table below summarizes the move from week to week using Tweets from Fabrizio Romano.
+
+**Important note:** it is not uncommon for deals to go through with undisclosed transfer fees. This may be due to some clubs being publicly-traded, therefore they have to disclose material investments, while clubs incorporated as private entities may not be required to disclose these fees, especially if they come from ownership sources. So there may be some deals in the data with undisclosed transfer fees that would have been in the top 15 most expensive deals, but from following the transfer window as a fan this table seems to account for all of the mega deals.
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+remove(color_function_five, colors_five, fig_five,
+       font, ordered_dates, x_five, y_five)
+
+remove(color_function_four, colors_four,
+       fig_four, freq_dates, x_four, y_four)
+
+remove(color_function_one, colors_one,
+       fig_one, top_deals, x_one, y_one, 
+       hover_text_one)
+```
+
+#### Example of the project goal
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+#key_tweets <- vector()
+
+#for (name in players$V2) {
+#  key_tweets <- data %>%
+#    filter(stringr::str_detect(text, paste('(?i)'[name])))
+#}
+
+havertz <- data %>%
+  filter(stringr::str_detect(text, '(?i)Havertz')) %>%
+  mutate(player = 'Havertz') %>%
+  mutate(confirmed = fees %>%
+           filter(player == 'Kai Havertz') %>%
+           select(date))
+
+havertz_example <- havertz %>%
+  filter(user == 'Fabrizio Romano') %>%
+  select(user, text, datetime, confirmed)
+
+confirmed_date <- as_datetime(havertz_example$confirmed$date)
+
+
+havertz_example <- havertz_example %>%
+  mutate(index = seq.int(nrow(havertz_example))) %>%
+  mutate(confirmed = as_datetime(confirmed_date))
+
+havertz_key_tweets <- c(8, 11, 14, 23, 25, 32,
+                        33, 40, 43, 59, 62, 65,
+                        66, 67)
+
+havertz_example <- havertz_example %>%
+  filter(index %in% havertz_key_tweets) %>%
+  select(-index) %>%
+  as_tibble()
+
+remove(havertz_key_tweets, confirmed_date)
+```
+
+The table below shows Fabrizio Romano's Tweets about Kai Havertz's potential and eventual move to Chelsea. Columns 3 and 4 show the Tweet timestamp followed by the confirmed date of the transfer respectively. The first footnote links to Fabrizio Romano's Twitter profile, while the second links to the official Chelsea account's Tweet announcing the signing of Kai Havertz.
+
+```{r echo = FALSE}
+
+gt(havertz_example) %>%
+  tab_header(title = md('**Kai Havertz Transfer Saga**'),
+             subtitle = md('Fabrizio Romano\'s key tweets')) %>%
+  tab_options(table.font.size = 'small',
+              table.background.color = 'lightcyan') %>%
+  tab_footnote(footnote = 'https://twitter.com/FabrizioRomano',
+               locations = cells_column_labels(columns = vars(user))) %>%
+  tab_footnote(footnote = 'https://twitter.com/ChelseaFC/status/1301962256297664513',
+               locations = cells_column_labels(columns = vars(confirmed)))
+
+```
+
+**Interactive plot of Transfer Timeline**
+
+Below is what I wanted to follow a table like the one above with: a chart plotting the key Tweets, with the y-axis showing the number of days until the deal is announced by the club and the x-axis showing the date. Therefore each point in the plot represents a Tweet and the tooltip that appears on hover shows the key phrase of the Tweet. The colors in the legend and of each individual point represent which journalist Tweeted the update on the potential deal. 
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+
+allan <- data %>%
+  filter(stringr::str_detect(text, '(?i)Allan')) %>%
+  mutate(player = 'Allan') %>%
+  mutate(confirmed = fees %>%
+           filter(player == 'Allan') %>%
+           select(date))
+
+
+#trying ideal visual 
+
+allan <- allan %>%
+  mutate(index = seq.int(nrow(allan)))
+
+key_allan_tweets <- c(12, 13, 14, 15, 16, 17, 22, 23, 
+                      24, 27, 31, 37, 41, 44, 47, 51, 
+                      55, 59, 60, 67, 74)
+
+allan <- allan %>%
+  filter(index %in% key_allan_tweets) %>%
+  select(-followers, -retweets, -index)
+
+
+allan <- allan %>%
+  mutate(confirmed = as_datetime(allan$confirmed$date)) %>%
+  select(user, datetime, text, confirmed)
+
+
+allan <- allan %>%
+  mutate(diff = confirmed - datetime)
+
+allan$diff <- as.numeric(round(allan$diff))
+
+allan <- allan %>%
+  mutate(in_days = if_else(diff > 24, diff / 24, diff))
+
+allan <- allan %>%
+  mutate(in_days = round(in_days, digits = 2))
+
+allan$in_days[1] <- round(allan$in_days[1] / 24, digits = 2)
+allan$in_days[2] <- round(allan$in_days[2] / 24, digits = 2)
+
+
+#visual of the allan transfer
+legend_names <- c('orange', 'blue', 'green')
+
+legend_names <- setNames(legend_names,
+                         c('Fabrizio Romano', 'Sport Witness',
+                           'Duncan Castles'))
+
+font <- list(family = 'Courier New, monospace',
+             size = 18,
+             color = 'black')
+
+allan_phrases <- c('Announcement close', 'Deal already done',
+                   'Napoli owner confirms', 'Doucoure next!',
+                   'Allan says goodbye', 'Allan medicals',
+                   'Napoli owner confirms',
+                   'Everton chairman confirms',
+                   'Allan is leaving Naples',
+                   'Total agreement reached',
+                   'Deal nearly done',
+                   'Everton Napoli in talks again',
+                   'Deal could be done today',
+                   'Deal getting closer',
+                   'Everton Napoli in talks',
+                   'Negotiations ongoing',
+                   'Allan agents meet with Everton',
+                   'Wolves register interest',
+                   'Everton make initial offer',
+                   'Everton ready to bid',
+                   'Everton want Allan')
+
+hover_allan <- allan_phrases
+
+fig_allan <- plot_ly(
+  data = allan,
+  x = ~datetime,
+  y = ~in_days,
+  color = ~user,
+  colors = c('#43a2ca', '#a8ddb5',
+             '#feb24c'),
+  size = 5
+  )
+
+
+x_allan <- list(title = 'Date',
+                titlefont = font)
+
+y_allan <- list(title = 'Days until Deal Confirmed',
+                titlefont = font)
+
+fig_allan <- fig_allan %>%
+  add_trace(text = hover_allan,
+            hover_info = 'text') %>%
+  layout(title = 'Allan Transfer Timeline',
+         xaxis = x_allan,
+         yaxis = y_allan,
+         images = list(
+    source = base64enc::dataURI(file = './everton.png'),
+    x = 0, y = 1,
+    sizex = 0.2, sizey = 0.1,
+    xref = 'paper', yref = 'paper',
+    xanchor = 'left', yanchor = 'bottom'
+  ),
+  margin = list(t = 50)
+  )
+
+fig_allan
+
+
+```
+
+**Confirmation:** Everton's [Tweet]('https://twitter.com/Everton/status/1302170383659995136') announcing the deal.
+
+#### Why did I pursue this project?
+
+My goal with the descriptive data analysis was to provide basic statistics on the selected sport journalists such as number of retweets and the amount of times they posted Tweets during the date range for this project. In terms of deals, my goal was to provide summary data on transfer activity to answer questions such as: 1) Which clubs were more active in this transfer window?, 2) Did clubs still spend high sums on transfer fees for new players?, and 3) How did daily transfer activity fluctuate across the transfer window?
+
+With comparative analysis my goal was to compare the datetimes of Tweets with the date of confirmation for a given deal. This is interesting as a soccer fan but also a sports fan in general, because this project could probably be reproduced or extended fairly easily to other sports. Additionally, it could be extended across other domains from a data journalism perspective to answer questions such as: which journalists can share news ahead of it passing through media outlets?
+
+#### What did I understand better as a result?
+
+It is important to consider some Twitter accounts may closely follow users like Fabrizio Romano and repeat their Tweets in their own words to make it look as though they've also got inside information and are reliable, when in reality journalists like Fabrizio Romano are doing the work for it and are the ones who are actually well-connected.
+
+From a natural language processing perspective, I learned this is a difficult problem to solve. Unfortunately I had to manually select some Tweets to produce the example plot of Allan's transfer to Everton so I could at a minimum show what I was attempting to do. Manually selecting key Tweets is obviously not scalable across thousands of transfers and even more corresponding Tweets from many more users. However, when each journalist or user Tweets with their own style of phrasing, it becomes very difficult to homogenize that process and extract key phrases at scale. For example, Fabrizio Romano typically confirms a deal with the phrase 'Here we go!', but this can't scale because some very different language could be used to confirm a deal like 'It is nearly done'. This ambiguity makes filtering across thousands of Tweets very challenging.
+
+From a web scraping and data collection perspective, I saw how three very similar webpages require quite different methods to be scraped. This was a difficult problem and ended up taking me much longer than I initially planned for. This process showed me how important it is to continue learning R and becoming much better in writing code.
+
+#### Possible next steps
+
+If I can figure out how to filter Tweets with key phrases that would scale across thousands of Tweets from journalists of different nationalities and backgrounds, I'd like to have the Allan Transfer Timeline plot to have a drop-down menu where I can select any player from the list of completed deals. Each one would show an interactive plot of that player's transfer timeline along with the journalists and their relevant Tweets closely covering the deal.
+
+It would also be fun and interesting to follow an analysis of a player's transfer and the fee paid or sum of wages paid to the player, then compare it to their performances across a season at their new team. This would answer the question of which deals were the most valuable for buying clubs. As a simple example, if a club paid 20million USD for a new striker and he plays 40 games in a season, it comes out to 500,000 USD per game; but extending this to other statistics of the player beyond just the number of games played. This could be a really insightful analysis for transfer evaluation and even player valuations used to determine fair transfer fees for players.
+
+**Some useful extras:**
+
+```{r}
+'%notin%' <- Negate('%in%')
+```
+
+At a few separate times in my project I wanted to have an operator for 'not in' in a vector of strings. I came across this code snippet above and it solved the problem. Use the `Negate()` function on the `%in%` operator to create your own `%notin%` operator.
